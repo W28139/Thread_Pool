@@ -18,9 +18,18 @@ ThreadPool::ThreadPool()
 ThreadPool::~ThreadPool()
 {
 	isPoolRunning_ = false;
-	std::unique_lock<std::mutex>lock(taskQueMtx_);
-	notEmpty_.notify_all();
-	exitCond_.wait(lock,[&]()->bool { return threads_.size() == 0;});
+	{
+		std::unique_lock<std::mutex>lock(taskQueMtx_);
+		notEmpty_.notify_all();
+	}
+	//exitCond_.wait(lock,[&]()->bool { return threads_.size() == 0;});
+
+	// join 会阻塞在这里，直到子线程把 taskQue_ 里的活全干完并退出 ThreadFunc
+	for(auto &pair:threads_)
+	{
+		pair.second->join();
+	}
+	threads_.clear();
 }
 
 void ThreadPool::setMode(PoolMode mode)
@@ -111,100 +120,82 @@ Result ThreadPool::submitTask(std::shared_ptr<Task>task)
 	return Result(task,true);
 }
 
-void ThreadPool::ThreadFunc(int threadid)	// 线程函数返回,相应的线程也就结束了
+void ThreadPool::ThreadFunc(int threadid)
 {
-	auto lastTime = std::chrono::high_resolution_clock::now();	// 记录线程初始的时间
-	while(isPoolRunning_)
-	{
-		std::shared_ptr<Task>task;
-		{
-			std::unique_lock<std::mutex>lock(taskQueMtx_);
+    auto lastTime = std::chrono::high_resolution_clock::now();
+    
+    while (true) 
+    {
+        std::shared_ptr<Task> task;
+        {
+            std::unique_lock<std::mutex> lock(taskQueMtx_);
 
-			std::cout<<"tid:"<<std::this_thread::get_id()<<"尝试获取任务"<<std::endl;
-			
-			if(poolMode_ == PoolMode::MODE_CACHED)
-			{
-				while(taskQue_.size()==0 && isPoolRunning_)
-				{
-					if(!isPoolRunning_)
-					{
-						threads_.erase(threadid);
-						exitCond_.notify_one();
-						std::cout<<"thread id:"<<std::this_thread::get_id()<<"exit."<<std::endl;
-						return;
-					}
+            std::cout << "tid:" << std::this_thread::get_id() << " 尝试获取任务" << std::endl;
 
-					if(std::cv_status::timeout == notEmpty_.wait_for(lock,std::chrono::seconds(1)))
-					{
-						if(!isPoolRunning_)
-						{
-							threads_.erase(threadid);
-							exitCond_.notify_one();
-							std::cout<<"thread id:"<<std::this_thread::get_id()<<"exit."<<std::endl;
-							return;
-						}
-						auto now = std::chrono::high_resolution_clock().now();
-						auto dur = std::chrono::duration_cast<std::chrono::seconds>(now-lastTime);
-						// 超时，销毁线程
-						if(dur.count()>=THREAD_MAX_IDLE_TIME && curThreadSize_ > initThreadSize_)
-						{
-							threads_.erase(threadid);
-							curThreadSize_--;
-							idleThreadSize_--;
-							exitCond_.notify_one();
-							std::cout<<"thread id:"<<std::this_thread::get_id()<<"exit."<<std::endl;
-							return;
-						}
-					}
-				}
-				
-			}
-			else
-			{
-				notEmpty_.wait(lock,[&]()->bool { return taskQue_.size()>0 || !isPoolRunning_;});
+            // 1. 等待任务或者退出信号
+            while (taskQue_.empty())
+            {
+                // 如果线程池已停止运行，准备退出
+                if (!isPoolRunning_)
+                {
+                    goto EXIT_HANDLER; 
+                }
 
-				// 看一看是否是线程池结束而被唤醒
-				if(!isPoolRunning_)
-				{
-					threads_.erase(threadid);
-					exitCond_.notify_one();
-					std::cout<<"thread id:"<<std::this_thread::get_id()<<"exit."<<std::endl;
-					return;
-				}
-			}
-			
-			std::cout<<"tid:"<<std::this_thread::get_id()<<"获取任务成功"<<std::endl;
-			
-			idleThreadSize_--;
-			task = taskQue_.front();
-			taskQue_.pop();
-			taskSize_--;
+                if (poolMode_ == PoolMode::MODE_CACHED)
+                {
+                    // CACHED 模式：支持超时回收
+                    if (std::cv_status::timeout == notEmpty_.wait_for(lock, std::chrono::seconds(1)))
+                    {
+                        auto now = std::chrono::high_resolution_clock::now();
+                        auto dur = std::chrono::duration_cast<std::chrono::seconds>(now - lastTime);
+                        
+                        // 超时且当前线程数超过初始值，则销毁线程
+                        if (dur.count() >= THREAD_MAX_IDLE_TIME && curThreadSize_ > initThreadSize_)
+                        {
+                            goto EXIT_HANDLER;
+                        }
+                    }
+                }
+                else
+                {
+                    // FIXED 模式：无限期等待任务
+                    notEmpty_.wait(lock, [&]() { return !taskQue_.empty() || !isPoolRunning_; });
+                }
+            }
 
-			if(taskQue_.size()>0)
-			{
-				notEmpty_.notify_all();
-			}
+            // 2. 成功获取任务
+            std::cout << "tid:" << std::this_thread::get_id() << " 获取任务成功" << std::endl;
+            
+            idleThreadSize_--; // 准备执行，空闲线程减1
+            task = taskQue_.front();
+            taskQue_.pop();
+            taskSize_--;
 
-			notFull_.notify_all();
-		}
+            // 如果队列中还有任务，继续通知其他线程
+            if (!taskQue_.empty())
+            {
+                notEmpty_.notify_all();
+            }
+            notFull_.notify_all(); 
+        } // 自动释放锁
 
-		// 当前线程负责执行这个任务
-		if(task!=nullptr)
-		{
-			task->exec();
-		}
-		lastTime = std::chrono::high_resolution_clock::now();	// 更新线程执行完任务的时间
-		idleThreadSize_++;
-	}
-	
-	// 如果退出循环，那说明线程池已经要销毁，因此要结束线程
-	std::cout<<"thread id:"<<std::this_thread::get_id()<<"exit."<<std::endl;
-	{
-		std::unique_lock<std::mutex> lock(taskQueMtx_);
-		threads_.erase(threadid);
-		exitCond_.notify_one();
-	}
-	return;
+        // 3. 执行任务（在锁之外执行，提高并发度）
+        if (task != nullptr)
+        {
+            task->exec();
+        }
+
+        // 4. 任务完成，更新状态
+        lastTime = std::chrono::high_resolution_clock::now();
+        idleThreadSize_++; 
+    }
+
+EXIT_HANDLER:
+    // 线程退出时的收尾逻辑
+    // 注意：必须先打印，再从 map 中删除，最后通知析构函数
+    std::cout << "thread id:" << std::this_thread::get_id() << " exit." << std::endl;
+
+	curThreadSize_--;
 }
 
 bool ThreadPool::checkRunningState() const
@@ -246,8 +237,16 @@ Thread::~Thread(){}
 void Thread::start()
 {
 	// 创建一个线程，执行线程函数
-	std::thread t(func_,threadId_);	// C++11来说，线程对象t  线程函数func_
-	t.detach();				// 设置分离线程（保证线程函数不会销毁，分离线程函数与线程对象）
+	t_ = std::thread(func_,threadId_);	// C++11来说，线程对象t  线程函数func_
+	// t.detach();				// 设置分离线程（保证线程函数不会销毁，分离线程函数与线程对象）
+}
+
+void Thread::join()
+{
+	if(t_.joinable())
+	{
+		t_.join();
+	}
 }
 
 int Thread::getId() const

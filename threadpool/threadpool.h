@@ -148,6 +148,8 @@ public:
 	// 启动线程
 	void start();
 
+	void join();
+
 	// 获取线程ID
 	int getId() const;
 
@@ -155,6 +157,7 @@ private:
 	ThreadFunc func_;
 	static int generateId_;
 	int threadId_;	// 保存线程ID
+	std::thread t_;
 };
 
 // 线程池类
