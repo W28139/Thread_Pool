@@ -61,6 +61,7 @@ public:
         auto task = std::make_shared<std::packaged_task<RType()>>(
             std::bind(std::forward<Func>(func), std::forward<Args>(args)...)
         );
+        // 获取该任务的 future对象,一个任务只能获取一次,利用该对象调用结果
         std::future<RType> result = task->get_future();
 
         std::unique_lock<std::mutex> lock(taskQueMtx_);
