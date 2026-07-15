@@ -11,7 +11,6 @@
 #include<thread>
 #include<chrono>
 #include<unordered_map>
-
 class Any
 {
 public:
@@ -22,10 +21,12 @@ public:
 	Any(Any&&) = default;
 	Any& operator = (Any&&) = default;
 
+	// 存入
 	template<typename T>
 	Any(T data) : base_(std::make_unique<Derive<T>>(data))
 	{}
 
+	// 取出
 	template<typename T>
 	T cast_()
 	{
@@ -136,8 +137,6 @@ enum class PoolMode
 // 线程类
 class Thread
 {
-private:
-	
 public:
 	// 线程函数对象类型
 	using ThreadFunc = std::function<void(int)>;

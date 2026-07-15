@@ -78,6 +78,7 @@ void ThreadPool::start(int initThreadSize)
 	{
 		// 创建thread线程对象的时候，把线程函数给到thread线程对象
 		auto ptr = std::make_unique<Thread>(std::bind(&ThreadPool::ThreadFunc,this,std::placeholders::_1));
+		std::unique_ptr<Thread>ptr(new Thread(std::bind(&ThreadPool::ThreadFunc,this,std::placeholders::_1)));
 		int threadId = ptr->getId();
 		threads_.emplace(threadId,std::move(ptr));
 	}
@@ -196,6 +197,7 @@ EXIT_HANDLER:
     std::cout << "thread id:" << std::this_thread::get_id() << " exit." << std::endl;
 
 	curThreadSize_--;
+	// 这里只是形式上的删除，随着线程的频繁建立，Map会越来越大，直到线程池关闭才会统一join掉
 }
 
 bool ThreadPool::checkRunningState() const
@@ -213,6 +215,7 @@ void Task::exec()
 {
 	if(result_!=nullptr)
 	{
+	// 这里是先执行run,返回结果为Any类型，传入setVal()里
 	result_->setVal(run());	// 这里发生多态调用
 	}
 }
@@ -261,6 +264,7 @@ Result::Result(std::shared_ptr<Task> task, bool isValid)
 	: isValid_(isValid),
 	  task_(task)
 {
+	// 让该Result对象创建的成员变量task_里，放入自身Result对象
 	task_->setResult(this);
 }
 
@@ -282,4 +286,3 @@ void Result::setVal(Any any)
 	this -> any_ = std::move(any);
 	sem_.post();	// 已经获取的任务的返回值，增加信号量资源
 }
-
