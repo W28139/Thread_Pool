@@ -7,13 +7,11 @@
 
 using namespace std;
 
-// 示例函数1：计算和
 int sum(int a, int b) {
     std::this_thread::sleep_for(std::chrono::seconds(1)); // 模拟耗时操作
     return a + b;
 }
 
-// 示例函数2：字符串处理
 string concat(string a, string b) {
     return a + " " + b;
 }
@@ -28,22 +26,18 @@ int main() {
         pool.setMode(PoolMode::MODE_FIXED);
         pool.start(4); // 启动4个核心线程
 
-        // 提交计算任务
         future<int> res1 = pool.submitTask(sum, 10, 20);
         future<int> res2 = pool.submitTask(sum, 100, 200);
         future<int> res3 = pool.submitTask([](int i) { return i * i; }, 10);
 
-        // 提交字符串任务
         future<string> res4 = pool.submitTask(concat, "Hello", "ThreadPool");
 
-        // 获取结果 (get() 会阻塞直到任务完成)
         cout << "Sum1 result: " << res1.get() << endl;
         cout << "Sum2 result: " << res2.get() << endl;
         cout << "Lambda result: " << res3.get() << endl;
         cout << "String result: " << res4.get() << endl;
     } 
-    // pool 离开作用域，触发析构函数，等待所有线程安全退出
-    cout << "FIXED Mode pool destroyed safely." << endl << endl;
+    cout << "FIXED Mode pool destroyed safely." << endl;
 
 
     /* 
@@ -88,7 +82,7 @@ int main() {
         pool.setTaskQueMaxThreshold(2); // 极小的队列，模拟溢出
         pool.start(1);
 
-        // 提交一个长时间任务，占用掉唯一的线程
+        // 提交一个长时间任务，占用掉唯一的线程(正在执行的任务不在队列里)
         pool.submitTask([]() { std::this_thread::sleep_for(std::chrono::seconds(5)); });
 
         // 连续提交任务填满队列

@@ -27,7 +27,7 @@ class Thread {
 public:
     using ThreadFunc = std::function<void(int)>;
     Thread(ThreadFunc func);
-    ~Thread() = default;
+    ~Thread();
     void start();
     int getId() const;
 
@@ -35,9 +35,10 @@ private:
     ThreadFunc func_;
     static std::atomic_int generateId_;
     int threadId_;
+    std::thread thread_;
 };
 
-// 线程池类声明
+// 线程池类声明----------------------------------------------------------------------------------
 class ThreadPool {
 public:
     ThreadPool();
@@ -56,13 +57,12 @@ public:
     // 提交任务：模板函数必须定义在头文件中
     template<typename Func, typename... Args>
     auto submitTask(Func&& func, Args&&... args) -> std::future<decltype(func(args...))> {
-        using RType = decltype(func(args...));
         
-        auto task = std::make_shared<std::packaged_task<RType()>>(
+        auto task = std::make_shared<std::packaged_task<decltype(func(args...))()>>(
             std::bind(std::forward<Func>(func), std::forward<Args>(args)...)
         );
         // 获取该任务的 future对象,一个任务只能获取一次,利用该对象调用结果
-        std::future<RType> result = task->get_future();
+        std::future<decltype(func(args...))> result = task->get_future();
 
         std::unique_lock<std::mutex> lock(taskQueMtx_);
         // 等待队列不满（最多等待1秒）
@@ -70,7 +70,7 @@ public:
             [&]() { return taskQue_.size() < (size_t)taskQueMaxThreshold_; })) {
             
             // 提交失败逻辑
-            auto emptyTask = std::make_shared<std::packaged_task<RType()>>([]() { return RType(); });
+            auto emptyTask = std::make_shared<std::packaged_task<decltype(func(args...))()>>([]() { return decltype(func(args...))(); });
             (*emptyTask)();
             return emptyTask->get_future();
         }
@@ -79,7 +79,7 @@ public:
         taskQue_.emplace([task]() { (*task)(); });
         taskSize_++;
 
-        notEmpty_.notify_all();
+        notEmpty_.notify_one();
 
         // Cached模式扩容判断
         if (poolMode_ == PoolMode::MODE_CACHED && taskSize_ > idleThreadSize_ && curThreadSize_ < threadSizeThreshold_) {
@@ -89,6 +89,7 @@ public:
         return result;
     }
 
+
     // 禁止拷贝
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
@@ -96,6 +97,7 @@ public:
 private:
     void ThreadFunc(int threadid);
     void createThread();
+    void cleanFinishThreads();
 
 private:
     // 线程与任务相关
@@ -118,4 +120,7 @@ private:
 
     PoolMode poolMode_;
     std::atomic_bool isPoolRunning_;
+
+    std::vector<int>exitedThreadIds_;   // 记录已经运行结束、等待 join 的线程 ID
+    std::mutex exitMtx_;                // 专门保护 exitedThreadIds_
 };
